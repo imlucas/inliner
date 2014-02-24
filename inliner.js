@@ -31,7 +31,7 @@ function removeComments(element) {
   if (!element || !element.childNodes) return;
   var nodes = element.childNodes,
       i = nodes.length;
-  
+
   while (i--) {
     if (nodes[i].nodeName === '#comment' && nodes[i].nodeValue.indexOf('[') !== 0) {
       element.removeChild(nodes[i]);
@@ -46,7 +46,7 @@ function Inliner(url, options, callback) {
 
   this.requestCache = {};
   this.requestCachePending = {};
-  
+
   // inherit EventEmitter so that we can send events with progress
   events.EventEmitter.call(this);
 
@@ -56,9 +56,9 @@ function Inliner(url, options, callback) {
   } else if (options === undefined) {
     options = Inliner.defaults();
   }
-  
+
   inliner.options = options;
-  
+
   inliner.total = 1;
   inliner.todo = 1;
   inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
@@ -326,7 +326,6 @@ Inliner.prototype.get = function (url, options, callback) {
     callback = options;
     options = {};
   }
-  
   // if we've cached this request in the past, just return the cached content
   if (this.requestCache[url] !== undefined) {
     this.emit('progress', 'cached ' + url);
@@ -337,7 +336,6 @@ Inliner.prototype.get = function (url, options, callback) {
   } else {
     this.requestCachePending[url] = [callback];
   }
-
   var inliner = this;
 
   // TODO remove the sync
@@ -388,7 +386,7 @@ Inliner.prototype.get = function (url, options, callback) {
         }
       }
       gunzip = new compress.GunzipStream();
-      
+
       // the data event is triggered by writing to the gunzip object when the response
       // receives data (yeah, further down).
       // once all the data has finished (triggerd by the response end event), we undefine
@@ -401,7 +399,7 @@ Inliner.prototype.get = function (url, options, callback) {
         res.emit('end');
       });
     }
-    
+
     res.on('data', function (chunk) {
       // only process data if we have a 200 ok
       if (res.statusCode == 200) {
@@ -412,17 +410,17 @@ Inliner.prototype.get = function (url, options, callback) {
         }
       }
     });
-    
+
     // required if we're going to base64 encode the content later on
     if (options.encode) {
       res.setEncoding('binary');
     }
 
-    res.on('end', function () { 
+    res.on('end', function () {
       if (gunzip) {
         gunzip.end();
         return;
-      } 
+      }
 
       if (res.statusCode !== 200) {
         inliner.emit('progress', 'get ' + res.statusCode + ' on ' + url);
@@ -435,11 +433,11 @@ Inliner.prototype.get = function (url, options, callback) {
             body = '';
           }
         }
-        
+
         if (options.encode && res.statusCode == 200) {
           body = 'data:' + res.headers['content-type'] + ';base64,' + new Buffer(body, 'binary').toString('base64');
         }
-        
+
         inliner.requestCache[url] = body;
         inliner.requestCachePending[url].forEach(function (callback, i) {
           if (i == 0 && body && res.statusCode == 200) {
@@ -459,17 +457,17 @@ Inliner.prototype.getImagesFromCSS = function (rooturl, rawCSS, callback) {
     callback && callback(rawCSS);
     return;
   }
-  
+
   var inliner = this,
       images = {},
       urlMatch = /url\((?:['"]*)(?!['"]*data:)(.*?)(?:['"]*)\)/g,
       singleURLMatch = /url\(\s*(?:['"]*)(?!['"]*data:)(.*?)(?:['"]*)\s*\)/,
       matches = rawCSS.match(urlMatch),
       imageCount = matches === null ? 0 : matches.length; // TODO check!
-  
+
   inliner.total += imageCount;
   inliner.todo += imageCount;
-  
+
   function checkFinished() {
     inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
     if (imageCount < 0) {
@@ -480,7 +478,7 @@ Inliner.prototype.getImagesFromCSS = function (rooturl, rawCSS, callback) {
       }));
     }
   }
-  
+
   if (imageCount) {
     matches.forEach(function (url) {
       url = url.match(singleURLMatch)[1];
@@ -490,7 +488,7 @@ Inliner.prototype.getImagesFromCSS = function (rooturl, rawCSS, callback) {
           imageCount--;
           inliner.todo--;
           if (images[url] === undefined) images[url] = dataurl;
-          
+
           checkFinished();
         });
       } else {
@@ -509,13 +507,13 @@ Inliner.prototype.getImportCSS = function (rooturl, css, callback) {
   //   callback = css;
   //   rooturl = '';
   // }
-  
+
   var position = css.indexOf('@import'),
       inliner = this;
 
   if (position !== -1) {
     var match = css.match(/@import\s*(.*)/);
-    
+
     if (match !== null && match.length) {
       var url = match[1].replace(/url/, '').replace(/['}"]/g, '').replace(/;/, '').trim().split(' '); // clean up
       // if url has a length > 1, then we have media types to target
@@ -526,10 +524,10 @@ Inliner.prototype.getImportCSS = function (rooturl, css, callback) {
           url.shift();
           importedCSS = '@media ' + url.join(' ') + '{' + importedCSS + '}';
         }
-        
+
         css = css.replace(match[0], importedCSS);
         inliner.getImportCSS(rooturl, css, callback);
-      });          
+      });
     }
   } else {
     if (inliner.options.compressCSS) css = compressCSS(css);
@@ -558,7 +556,7 @@ var makeRequest = Inliner.makeRequest = function (url, extraOptions) {
 module.exports = Inliner;
 
 if (!module.parent) {
-  // if this module isn't being included in a larger app, defer to the 
+  // if this module isn't being included in a larger app, defer to the
   // bin/inliner for the help options
   require('./bin/inliner');
 }
