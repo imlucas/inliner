@@ -1,7 +1,6 @@
 var URL = require('url'),
     util = require('util'),
     events = require('events'),
-    Buffer = require('buffer').Buffer,
     fs = require('fs'),
     path = require('path'),
     jsdom = require('jsdom'),
