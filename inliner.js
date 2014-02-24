@@ -64,259 +64,278 @@ function Inliner(url, options, callback) {
   inliner.on('error', function (data) {
     console.error(data + ' :: ' + url);
   });
-  
-  inliner.get(url, function (html) {
-    inliner.todo--;
-    inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-    
-    // workaround for https://github.com/tmpvar/jsdom/issues/172
-    // need to remove empty script tags as it casues jsdom to skip the env callback
-    html = html.replace(/<\script(:? type=['"|].*?['"|])><\/script>/ig, '');
 
-    if (!html) {
-      inliner.emit('end', '');
-      callback && callback('');
-    } else {
-      // BIG ASS PROTECTIVE TRY/CATCH - mostly because of this: https://github.com/tmpvar/jsdom/issues/319
-      try { 
+  if(options.html){
+    return this.parse(url, options.html.toString(), callback);
+  }
 
-      jsdom.env(html, [
-        'http://code.jquery.com/jquery.min.js'
-      ], {
-        url: url
-      }, function(errors, window) {
-        // remove jQuery that was included with jsdom
-        window.$('script:last').remove();
-        
-        var todo = { scripts: true, images: inliner.options.images, links: true, styles: true },
-            assets = {
-              scripts: window.$('script'),
-              images: window.$('img').filter(function(){ return this.src.indexOf('data:') == -1; }),
-              links: window.$('link[rel=stylesheet]'),
-              styles: window.$('style')
-            },
-            breakdown = {},
-            images = {};
-          
-        inliner.total = 1;
-
-        for (var key in todo) {
-          if (todo[key] === true && assets[key]) {
-            breakdown[key] = assets[key].length;
-            inliner.total += assets[key].length;
-            inliner.todo += assets[key].length;
-          } else {
-            assets[key] = [];
-          }
-        }
-
-        inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-
-        function finished() {
-          var items = 0,
-              html = '';
-          for (var key in breakdown) {
-            items += breakdown[key];
-          }
-          inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-
-          if (items === 0) {
-            // manually remove the comments
-            var els = removeComments(window.document.documentElement);
-            // collapse the white space
-            if (inliner.options.collapseWhitespace) {
-              // TODO put white space helper back in
-              window.$('pre').html(function (i, html) {
-                return html.replace(/\n/g, '~~nl~~'); //.replace(/\s/g, '~~s~~');
-              });
-              window.$('textarea').val(function (i, v) {
-                return v.replace(/\n/g, '~~nl~~').replace(/\s/g, '~~s~~');
-              });
-              html = window.document.innerHTML;
-              html = html.replace(/\s+/g, ' ').replace(/~~nl~~/g, '\n').replace(/~~s~~/g, ' ');
-            } else {
-              html = window.document.innerHTML;
-            }
-
-            html = '<!DOCTYPE html>' + html;
-            callback && callback(html);
-            inliner.emit('end', html);
-          } else if (items < 0) {
-            console.log('something went wrong on finish');
-            console.dir(breakdown);
-          } 
-        }
-
-        todo.images && assets.images.each(function () {
-          var img = this,
-              resolvedURL = URL.resolve(url, img.src);
-          inliner.get(resolvedURL, { encode: true }, function (dataurl) {
-            if (dataurl) images[img.src] = dataurl;
-            img.src = dataurl;
-            breakdown.images--;
-            inliner.todo--;
-            finished();
-          });
-        });
-    
-        todo.styles && assets.styles.each(function () {
-          var style = this;
-          inliner.getImportCSS(root, this.innerHTML, function (css, url) {
-            inliner.getImagesFromCSS(url, css, function (css) {
-              if (inliner.options.compressCSS) inliner.emit('progress', 'compress inline css');
-              window.$(style).text(css);
-
-              breakdown.styles--;
-              inliner.todo--;
-              finished();
-            });
-          });
-        });
-
-        todo.links && assets.links.each(function () {
-          var link = this,
-              linkURL = URL.resolve(url, link.href);
-
-          inliner.get(linkURL, function (css) {
-            inliner.getImagesFromCSS(linkURL, css, function (css) {
-              inliner.getImportCSS(linkURL, css, function (css) {
-                if (inliner.options.compressCSS) inliner.emit('progress', 'compress ' + linkURL);
-                breakdown.links--;
-                inliner.todo--;
-
-                var style = '',
-                    media = link.getAttribute('media');
-            
-                if (media) {
-                  style = '<style>@media ' + media + '{' + css + '}</style>';
-                } else {
-                  style = '<style>' + css + '</style>';
-                }
-
-                window.$(link).replaceWith(style);
-                finished();
-              });
-            });
-          });
-        });
-
-        function scriptsFinished() {
-          inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-          if (breakdown.scripts == 0) {
-            // now compress the source JavaScript
-            assets.scripts.each(function () {
-              if (this.innerHTML.trim().length == 0) {
-                // this is an empty script, so throw it away
-                inliner.todo--;
-                inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-                return;
-              }
-
-              var $script = window.$(this),
-                  src = $script.attr('src'),
-                  // note: not using .innerHTML as this coerses & => &amp;
-                  orig_code = this.firstChild.nodeValue
-                                  .replace(/<\/script>/gi, '<\\/script>'),
-                  final_code = '';
-
-              // only remove the src if we have a script body
-              if (orig_code) { 
-                $script.removeAttr('src');
-              }
-
-              // don't compress already minified code
-              if(!(/\bmin\b/).test(src) && !(/google-analytics/).test(src)) { 
-                inliner.todo++;
-                inliner.total++;
-                inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-                try {
-                  var ast = jsp.parse(orig_code); // parse code and get the initial AST
-
-                  ast = pro.ast_mangle(ast); // get a new AST with mangled names
-                  ast = pro.ast_squeeze(ast); // get an AST with compression optimizations
-                  final_code = pro.gen_code(ast);
-
-                  // some protection against putting script tags in the body
-                  window.$(this).text(final_code).append('\n');
-
-                  if (src) {
-                    inliner.emit('progress', 'compress ' + URL.resolve(root, src));
-                  } else {
-                    inliner.emit('progress', 'compress inline script');
-                  }
-                } catch (e) {
-                  // console.error(orig_code.indexOf('script>script'));
-                  // window.$(this).html(jsmin('', orig_code, 2));
-                  console.error('exception on ', src);
-                  console.error('exception in ' + src + ': ' + e.message);
-                  console.error('>>>>>> ' + orig_code.split('\n')[e.line - 1]);
-                }
-                inliner.todo--;
-                inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
-              } else if (orig_code) {
-                window.$(this).text(orig_code);
-                // this.innerText = orig_code;
-              }
-            });
-            finished();
-          }
-        }
-
-        // basically this is the jQuery instance we tacked on to the request,
-        // but we're just being extra sure before we do zap it out  
-        todo.scripts && assets.scripts.each(function () {
-          var $script = window.$(this),
-              scriptURL = URL.resolve(url, this.src);
-
-          if (!this.src || scriptURL.indexOf('google-analytics.com') !== -1) { // ignore google
-            breakdown.scripts--;
-            inliner.todo--;
-            scriptsFinished();
-          } else if (this.src) {
-            inliner.get(scriptURL, { not: 'text/html' }, function (data) {
-              // catches an exception that was being thrown, but script escaping wasn't being caught
-              if (data) $script.text(data.replace(/<\/script>/gi, '<\\/script>')); //.replace(/\/\/.*$\n/g, ''));
-              // $script.before('<!-- ' + scriptURL + ' -->');
-              breakdown.scripts--;
-              inliner.todo--;
-              scriptsFinished();
-            });      
-          }
-        });
-
-        // edge case - if there's no images, nor scripts, nor links - we call finished manually
-        if (assets.links.length == 0 && 
-            assets.styles.length == 0 && 
-            assets.images.length == 0 && 
-            assets.scripts.length == 0) {
-          finished();
-        }
-        
-        /** Inliner jobs:
-         *  1. get all inline images and base64 encode
-         *  2. get all external style sheets and move to inline
-         *  3. get all image references in CSS and base64 encode and replace urls
-         *  4. get all external scripts and move to inline
-         *  5. compress JavaScript
-         *  6. compress CSS & support media queries
-         *  7. compress HTML (/>\s+</g, '> <');
-         * 
-         *  FUTURE ITEMS:
-         *  - support for @import
-         *  - javascript validation - i.e. not throwing errors
-         */
-      });
-
-      } catch (e) {
-        inliner.emit('error', 'Fatal error parsing HTML - exiting');
-      }
-    }
+  inliner.get(url, function (html){
+    inliner.parse(url, html, callback);
   });
 }
 
 util.inherits(Inliner, events.EventEmitter);
 
 Inliner.version = Inliner.prototype.version = JSON.parse(require('fs').readFileSync(__dirname + '/package.json').toString()).version;
+
+Inliner.prototype.parse = function(url, html, callback){
+  var inliner = this;
+
+  inliner.todo--;
+  inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+
+  // workaround for https://github.com/tmpvar/jsdom/issues/172
+  // need to remove empty script tags as it casues jsdom to skip the env callback
+  html = html.replace(/<\script(:? type=['"|].*?['"|])><\/script>/ig, '');
+
+  if (!html) {
+    inliner.emit('end', '');
+    callback && callback('');
+  }
+  else {
+    // BIG ASS PROTECTIVE TRY/CATCH - mostly because of this: https://github.com/tmpvar/jsdom/issues/319
+    try {
+
+    jsdom.env(html, [
+      'http://code.jquery.com/jquery.min.js'
+    ], {
+      url: url
+    }, function(errors, window) {
+      // remove jQuery that was included with jsdom
+      window.$('script:last').remove();
+
+      var todo = { scripts: true, images: inliner.options.images, links: true, styles: true },
+          assets = {
+            scripts: window.$('script'),
+            images: window.$('img').filter(function(){ return this.src.indexOf('data:') == -1; }),
+            links: window.$('link[rel=stylesheet]'),
+            styles: window.$('style')
+          },
+          breakdown = {},
+          images = {};
+
+      inliner.total = 1;
+
+      for (var key in todo) {
+        if (todo[key] === true && assets[key]) {
+          breakdown[key] = assets[key].length;
+          inliner.total += assets[key].length;
+          inliner.todo += assets[key].length;
+        } else {
+          assets[key] = [];
+        }
+      }
+
+      inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+
+      function finished() {
+        var items = 0,
+            html = '';
+        for (var key in breakdown) {
+          items += breakdown[key];
+        }
+        inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+
+        if (items === 0) {
+          // manually remove the comments
+          var els = removeComments(window.document.documentElement);
+          // collapse the white space
+          if (inliner.options.collapseWhitespace) {
+            // TODO put white space helper back in
+            window.$('pre').html(function (i, html) {
+              return html.replace(/\n/g, '~~nl~~'); //.replace(/\s/g, '~~s~~');
+            });
+            window.$('textarea').val(function (i, v) {
+              return v.replace(/\n/g, '~~nl~~').replace(/\s/g, '~~s~~');
+            });
+            html = window.document.innerHTML;
+            html = html.replace(/\s+/g, ' ').replace(/~~nl~~/g, '\n').replace(/~~s~~/g, ' ');
+          } else {
+            html = window.document.innerHTML;
+          }
+
+          html = '<!DOCTYPE html>' + html;
+          callback && callback(html);
+          inliner.emit('end', html);
+        } else if (items < 0) {
+          console.log('something went wrong on finish');
+          console.dir(breakdown);
+        }
+      }
+
+      todo.images && assets.images.each(function () {
+        // Already encoded this business
+        if(this.src.indexOf('data:') === 0){
+          breakdown.images--;
+          inliner.todo--;
+          return finished();
+        }
+
+        var img = this,
+            resolvedURL = URL.resolve(url, img.src);
+        inliner.get(resolvedURL, { encode: true }, function (dataurl) {
+          if (dataurl) images[img.src] = dataurl;
+          img.src = dataurl;
+          breakdown.images--;
+          inliner.todo--;
+          finished();
+        });
+      });
+
+      todo.styles && assets.styles.each(function () {
+        var style = this;
+        inliner.getImportCSS(root, this.innerHTML, function (css, url) {
+          inliner.getImagesFromCSS(url, css, function (css) {
+            if (inliner.options.compressCSS) inliner.emit('progress', 'compress inline css');
+            window.$(style).text(css);
+
+            breakdown.styles--;
+            inliner.todo--;
+            finished();
+          });
+        });
+      });
+
+      todo.links && assets.links.each(function () {
+        var link = this,
+            linkURL = URL.resolve(url, link.href);
+
+        inliner.get(linkURL, function (css) {
+          inliner.getImagesFromCSS(linkURL, css, function (css) {
+            inliner.getImportCSS(linkURL, css, function (css) {
+              if (inliner.options.compressCSS) inliner.emit('progress', 'compress ' + linkURL);
+              breakdown.links--;
+              inliner.todo--;
+
+              var style = '',
+                  media = link.getAttribute('media');
+
+              if (media) {
+                style = '<style>@media ' + media + '{' + css + '}</style>';
+              } else {
+                style = '<style>' + css + '</style>';
+              }
+
+              window.$(link).replaceWith(style);
+              finished();
+            });
+          });
+        });
+      });
+
+      function scriptsFinished() {
+        inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+        if (breakdown.scripts == 0) {
+          // now compress the source JavaScript
+          assets.scripts.each(function () {
+            if (this.innerHTML.trim().length == 0) {
+              // this is an empty script, so throw it away
+              inliner.todo--;
+              inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+              return;
+            }
+
+            var $script = window.$(this),
+                src = $script.attr('src'),
+                // note: not using .innerHTML as this coerses & => &amp;
+                orig_code = this.firstChild.nodeValue
+                                .replace(/<\/script>/gi, '<\\/script>'),
+                final_code = '';
+
+            // only remove the src if we have a script body
+            if (orig_code) {
+              $script.removeAttr('src');
+            }
+
+            // don't compress already minified code
+            if(!(/\bmin\b/).test(src) && !(/google-analytics/).test(src)) {
+              inliner.todo++;
+              inliner.total++;
+              inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+              try {
+                var ast = jsp.parse(orig_code); // parse code and get the initial AST
+
+                ast = pro.ast_mangle(ast); // get a new AST with mangled names
+                ast = pro.ast_squeeze(ast); // get an AST with compression optimizations
+                final_code = pro.gen_code(ast);
+
+                // some protection against putting script tags in the body
+                window.$(this).text(final_code).append('\n');
+
+                if(src){
+                  inliner.emit('progress', 'compress ' + URL.resolve(url, src));
+                } else {
+                  inliner.emit('progress', 'compress inline script');
+                }
+              } catch (e) {
+                // console.error(orig_code.indexOf('script>script'));
+                // window.$(this).html(jsmin('', orig_code, 2));
+                console.error('exception on ', src);
+                console.error('exception in ' + src + ': ' + e.message);
+                console.error('>>>>>> ' + orig_code.split('\n')[e.line - 1]);
+                console.error(e, e.stack);
+              }
+              inliner.todo--;
+              inliner.emit('jobs', (inliner.total - inliner.todo) + '/' + inliner.total);
+            } else if (orig_code) {
+              window.$(this).text(orig_code);
+              // this.innerText = orig_code;
+            }
+          });
+          finished();
+        }
+      }
+
+      // basically this is the jQuery instance we tacked on to the request,
+      // but we're just being extra sure before we do zap it out
+      todo.scripts && assets.scripts.each(function () {
+        var $script = window.$(this),
+            scriptURL = this.src ? URL.resolve(url, this.src) : null;
+
+        if (!this.src || scriptURL.indexOf('google-analytics.com') !== -1) { // ignore google
+          breakdown.scripts--;
+          inliner.todo--;
+          scriptsFinished();
+        } else if (this.src) {
+          inliner.get(scriptURL, { not: 'text/html' }, function (data) {
+            // catches an exception that was being thrown, but script escaping wasn't being caught
+            if (data) $script.text(data.replace(/<\/script>/gi, '<\\/script>')); //.replace(/\/\/.*$\n/g, ''));
+            // $script.before('<!-- ' + scriptURL + ' -->');
+            breakdown.scripts--;
+            inliner.todo--;
+            scriptsFinished();
+          });
+        }
+      });
+
+      // edge case - if there's no images, nor scripts, nor links - we call finished manually
+      if (assets.links.length == 0 &&
+          assets.styles.length == 0 &&
+          assets.images.length == 0 &&
+          assets.scripts.length == 0) {
+        finished();
+      }
+
+      /** Inliner jobs:
+       *  1. get all inline images and base64 encode
+       *  2. get all external style sheets and move to inline
+       *  3. get all image references in CSS and base64 encode and replace urls
+       *  4. get all external scripts and move to inline
+       *  5. compress JavaScript
+       *  6. compress CSS & support media queries
+       *  7. compress HTML (/>\s+</g, '> <');
+       *
+       *  FUTURE ITEMS:
+       *  - support for @import
+       *  - javascript validation - i.e. not throwing errors
+       */
+    });
+
+    } catch (e) {
+      inliner.emit('error', 'Fatal error parsing HTML - exiting');
+    }
+  }
+};
 
 Inliner.prototype.get = function (url, options, callback) {
   // support no options being passed in
@@ -336,25 +355,36 @@ Inliner.prototype.get = function (url, options, callback) {
   }
   var inliner = this;
 
-  // TODO remove the sync
-  if (path.existsSync(url)) {
+  fs.exists(url, function(exists){
     // then we're dealing with a file
-    fs.readFile(url, 'utf8', function (err, body) {
-      inliner.requestCache[url] = body;
-      inliner.requestCachePending[url].forEach(function (callback, i) {
-        if (i == 0 && body) {
-          inliner.emit('progress', (options.encode ? 'encode' : 'get') + ' ' + url);
-        } else if (body) {
-          inliner.emit('progress', 'cached ' + url);
-        }
-        callback && callback(body);
-      });
+    if(exists){
+      return inliner.getFromLocal(url, options, callback);
+    }
+    inliner.getFromRemote(url, options, callback);
+  });
+};
+
+Inliner.prototype.getFromLocal = function(url, options, callback){
+  var inliner = this;
+
+  fs.readFile(url, 'utf8', function (err, body) {
+    if (options.encode && !err) {
+      body = 'data:image/gif;base64,' + new Buffer(body, 'binary').toString('base64');
+    }
+    inliner.requestCache[url] = body;
+    inliner.requestCachePending[url].forEach(function (callback, i) {
+      if (i === 0 && body) {
+        inliner.emit('progress', (options.encode ? 'encode' : 'get') + ' ' + url);
+      } else if (body) {
+        inliner.emit('progress', 'cached ' + url);
+      }
+      callback && callback(body);
     });
-    
-    return;
-  }
-  
-  // otherwis continue and create a new web request
+  });
+};
+
+Inliner.prototype.getFromRemote = function(url, options, callback){
+  console.log('getFromRemote', url, options);
   var request = makeRequest(url),
       body = '';
 
